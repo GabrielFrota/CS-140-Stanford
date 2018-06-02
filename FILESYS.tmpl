@@ -1,0 +1,320 @@
+       	       	     +-------------------------+
+		     |		CS 140	       |
+		     | PROJECT 4: FILE SYSTEMS |
+		     |	   DESIGN DOCUMENT     |
+		     +-------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Gabriel Moreno Frota
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+		     INDEXED AND EXTENSIBLE FILES
+		     ============================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+- No arquivo filesys/inode.h adicionados na struct inode_disk campos setores e flags
+
+#define INODE_FLAG_IS_DIR 0x01
+#define INODE_FLAG_DIR_REMOVIDO 0x02
+
+/* On-disk inode.
+   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct inode_disk
+{
+	block_sector_t setores[10] ;	/* ponteiros para os blocos do arquivo */
+	off_t length ;					/* File size in bytes. */
+	unsigned magic ;				/* Magic number. */
+	int flags ;						/* flags que informam condições especiais do arquivo */
+	uint32_t unused[115] ;			/* Not used. */
+} ;
+
+
+>> A2: What is the maximum size of a file supported by your inode
+>> structure?  Show your work.
+
+
+A estrutura possui 8 ponteiros diretos, 1 ponteiro indireto, e 1 ponteiro 
+duplamente indireto, portanto:
+
+(8 * 512) + (128 * 512) + (128 * 128 * 512) = 8 458 240 bytes = 8.45824 megabytes
+
+
+---- SYNCHRONIZATION ----
+
+>> A3: Explain how your code avoids a race if two processes attempt to
+>> extend a file at the same time.
+
+
+A extensão do arquivo acontece na função inode_write_at(), ao ser
+requisitado uma escrita em um offset do arquivo que ainda não foi alocado. 
+Um offset ainda não alocado pode ser um offset acima do tamanho do arquivo, 
+ou um offset dentro do arquivo, mas dentro de um setor de 512 zeros. Foi 
+implementado o conceito de "sparse files", aonde um setor de 512 zeros não 
+precisa ocupar espaço no disco desde sua criação, e sim ser alocado no primeiro
+write dentro desse setor. A funçao byte_to_sector() retornando -1 ou 0 significa
+que um novo setor do disco será alocado para o arquivo, e o seu inode será alterado. 
+Portanto antes de qualquer coisa é necessário pegar o lock de escrita do inode->sector,
+e esse lock só é solto após o processo de extensão desse 1 setor estar concluído, 
+o que faz com que apenas um processo por vez esteja extendendo um arquivo.
+
+
+>> A4: Suppose processes A and B both have file F open, both
+>> positioned at end-of-file.  If A reads and B writes F at the same
+>> time, A may read all, part, or none of what B writes.  However, A
+>> may not read data other than what B writes, e.g. if B writes
+>> nonzero data, A is not allowed to see all zeros.  Explain how your
+>> code avoids this race.
+
+
+O processo de extender um arquivo pega o lock de escrita do inode, e só
+libera após a alteração do inode e escrita dos dados do arquivo esteja concluída. 
+A ao tentar ler o arquivo, irá tentar pegar o lock de leitura do inode, para 
+descobrir qual setor do disco se encontra o offset requisitado para leitura, 
+e caso B esteja no processo de extensão, A irá bloquear. A só desbloqueará
+após a conclusão da extensão por B, momento esse que já contém o inode e os
+dados do arquivo em estado consistente. Portanto ou A retornará 0 no read, pois
+B não começou a extensão do arquivo ainda, ou A retornará 100% dos dados no read, 
+pois B já concluiu o processo de extensão e escrita, e nunca algo diferente desses
+2 casos.
+
+
+>> A5: Explain how your synchronization design provides "fairness".
+>> File access is "fair" if readers cannot indefinitely block writers
+>> or vice versa.  That is, many processes reading from a file cannot
+>> prevent forever another process from writing the file, and many
+>> processes writing to a file cannot prevent another process forever
+>> from reading the file.
+
+
+Só existe bloqueio no nível do arquivo em caso de extensão do arquivo. Operações
+que não causam extensão irão apenas ler o inode, situação que não causa bloqueio
+caso não exista alguém extendendo o arquivo, e existirá o controle de acesso 
+no nível de setores individuais na camada do cache do disco, com um read/write lock 
+por setor. No caso aonde existe extensão do arquivo, o inode será alterado, e para isso
+é necessário pegar o lock de escrita do inode, que implica em bloqueio de qualquer processo
+tentando acessar o inode enquanto o processo de extensão não foi concluido. O processo de
+extensão precisa bloquear o inode pois ele será alterado, e não pode ser acessado por outro
+processo enquanto ainda está em um estado inconsistente.
+
+
+---- RATIONALE ----
+
+>> A6: Is your inode structure a multilevel index?  If so, why did you
+>> choose this particular combination of direct, indirect, and doubly
+>> indirect blocks?  If not, why did you choose an alternative inode
+>> structure, and what advantages and disadvantages does your
+>> structure have, compared to a multilevel index?
+
+
+Sim. A escolha foi feita conforme a sugestão na especificação do projeto, 
+que diz para usar uma estrutura como a do sistema de arquivos ext, que é usado no linux. 
+Usei a combinação de 8 ponteiros diretos, 1 indireto e 1 duplamente indireto, pois 
+era a combinação necessária para representar um arquivo de 8MB, como dito na 
+especificação do projeto.
+
+
+			    SUBDIRECTORIES
+			    ==============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+- Adicionado o campo flags na struct, no arquivo filesys/inode.h. 
+
+#define INODE_FLAG_IS_DIR 0x01
+#define INODE_FLAG_DIR_REMOVIDO 0x02
+
+/* On-disk inode.
+   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct inode_disk
+{
+	block_sector_t setores[10] ;	/* ponteiros para os blocos do arquivo */
+	off_t length ;					/* File size in bytes. */
+	unsigned magic ;				/* Magic number. */
+	int flags ;						/* flags que informam condições especiais do arquivo */
+	uint32_t unused[115] ;			/* Not used. */
+} ;
+
+Um diretório é um arquivo aonde os dados do arquivo são as entradas do diretório. Uma entrada
+de diretório relaciona uma string e um inode number. Portanto um diretório é um arquivo
+que tem seu inode com o bit INODE_FLAG_IS_DIR setado, e ao ler/escrever os dados do arquivo 
+com as funçoes de leitura/escrita, manipula-se as entradas do diretório.
+
+
+---- ALGORITHMS ----
+
+>> B2: Describe your code for traversing a user-specified path.  How
+>> do traversals of absolute and relative paths differ?
+
+
+Todo caminho vindo de parametro pelo usuário é processado pela funçao dir_processarCaminho(),
+que possui a idéia de retornar o ultimo diretório possível de se chegar com aquela string,
+o diretório anterior ao último caso desejado, e o que sobrou da string quando o "traversing"
+acabou, que indica o pedaço do caminho que não representa diretórios já existentes. Com essas 
+tres informações é possível realizar todas as operações necessárias. Por exemplo,
+a chamada mkdir("/abc") retornará o diretório root como ultimo diretório no caminho, e a string
+"abc" de resto. Com isso é possível adicionar a entrada de diretório "abc" no diretório root. Em
+seguida, a chamada remove("/abc") retornará o diretório abc como último no caminho, o diretório 
+root de anterior, e resto == NULL. Com isso é possível ver que o caminho de parametro é 100% 
+válido (pois resto == NULL) e deletar a entrada "abc" do diretório root.
+Um caminho que começa com o caracter '/' inicia no diretório root, um caminho que não começa
+com o caracter '/' inicia no thread_current()->currentDir. Inicia-se então um loop, aonde a 
+idéia é retirar o próximo token delimitado por '/' da string, procurar no diretório atual uma
+entrada que tenha nome == token, e abrir o diretório caso o inode encontrado represente 
+um diretório. Ao sair do loop, retorna-se o ultimo diretório do caminho percorrido, o diretório 
+anterior ao último e o resto da string.
+
+
+---- SYNCHRONIZATION ----
+
+>> B4: How do you prevent races on directory entries?  For example,
+>> only one of two simultaneous attempts to remove a single file
+>> should succeed, as should only one of two simultaneous attempts to
+>> create a file with the same name, and so on.
+
+
+/////////////
+
+
+>> B5: Does your implementation allow a directory to be removed if it
+>> is open by a process or if it is in use as a process's current
+>> working directory?  If so, what happens to that process's future
+>> file system operations?  If not, how do you prevent it?
+
+
+Sim. Remover o diretório implica entre outras coisas setar a flag inode->removed, que 
+causará a remoção total do inode após todos os processos que o tem aberto fecha-lo. No 
+inicio de qualquer operação em um diretório, é checado se a flag inode->removed do diretório 
+alvo da operação está setada, e caso esteja, a função retorna sem fazer nada. 
+
+
+---- RATIONALE ----
+
+>> B6: Explain why you chose to represent the current directory of a
+>> process the way you did.
+
+
+O currentDir de um processo é o retorno de um dir_open(), que me pareceu a alternativa mais óbvia.
+O processo em sua criação herda o currentDir do processo pai, e o currentDir é fechado no término 
+do processo em thread_exit(). Caso a chamada chdir("abc") seja usada, o processo fecha o currentDir, 
+e currentDir = dir_open("abc").
+
+
+			     BUFFER CACHE
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+- Arquivo filesys/cache.c é totalmente novo. Coloca-lo inteiro aqui achei
+que ficaria feio, melhor olhar direto lá.
+
+
+---- ALGORITHMS ----
+
+>> C2: Describe how your cache replacement algorithm chooses a cache
+>> block to evict.
+
+
+Caso o bloco desejado não esteja na hash table, a função escolhe o fim da
+listaLRU para evict. A cada operação em um bloco do cache, o desc do bloco
+se torna a cabeça da listaLRU, portanto o fim da listaLRU é o bloco menos
+recentemente usado do cache, e será chutado.
+
+
+>> C3: Describe your implementation of write-behind.
+
+
+É criada uma thread do kernel na inicialização do sistema que executará a função writeBehind().
+A função writeBehind() é um loop infinito que a cada iteração tenta escrever alguns blocos sujos
+no disco (WRITE_BEHIND_QUANT_SETORES), e bloqueia por um intervalo de tempo entre as 
+iterações (WRITE_BEHIND_SLEEP).
+
+É criada uma thread do kernel na inicialização do sistema que executará a função escrever().
+A função escrever() é um loop infinito que a cada iteração escreve todos os blocos sujos do 
+cache, e bloqueia por ESCREVER_SLEEP milisegundos entre as iterações.
+
+
+>> C4: Describe your implementation of read-ahead.
+
+
+É criada uma thread do kernel na inicialização do sistema que executará a função readAhead().
+A função readAhead() é um loop infinito que da down no semaforo que expressa quantos itens
+existem na listaReadAhead. Portanto ela busca/carrega no cache os setores que estão na
+listaReadAhead, e bloqueia quando a lista está vazia.
+
+
+---- SYNCHRONIZATION ----
+
+>> C5: When one process is actively reading or writing data in a
+>> buffer cache block, how are other processes prevented from evicting
+>> that block?
+
+
+Existe um read/write lock para cada bloco do cache, que são pegos sempre antes de qualquer
+leitura ou escrita. O processo de evict antes de acontecer pega o write lock do bloco a ser
+chutado, portanto irá bloquear caso exista uma operação acontecendo no momento.
+
+
+>> C6: During the eviction of a block from the cache, how are other
+>> processes prevented from attempting to access the block?
+
+
+Durante o evict de um bloco, o write lock do bloco e o lockHash estão com um processo. É
+impossível outros processos acessarem o bloco, pois irão bloquear no lockHash ou no read/write
+lock do bloco, dependendo de qual "code path" estão.
+
+
+---- RATIONALE ----
+
+>> C7: Describe a file workload likely to benefit from buffer caching,
+>> and workloads likely to benefit from read-ahead and write-behind.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students in future quarters?
+
+>> Any other comments?

@@ -1,0 +1,318 @@
+			+--------------------+
+			|        CS 140      |
+			| PROJECT 1: THREADS |
+			|   DESIGN DOCUMENT  |
+			+--------------------+
+				   
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Gabriel Moreno Frota
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			     ALARM CLOCK
+			     ===========
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+/*
+ *  Lista de threads bloqueadas por um intervalo de tempo. Threads que
+ *  chamaram timer_sleep(ticks) são encadeadas aqui.
+ */
+static struct list listaBloqueadosTimer ;
+
+
+- Na struct thread do arquivo thread.h
+
+int64_t timerTicks ;								/* variavel usada em timers */
+
+controlar algo em função de um timer é algo comum, portanto adicionado o campo timerTicks na 
+struct. O campo pode ser usadoem diferentes contextos. No caso de uma thread na 
+listaBloqueadosTimer, o timerTicks possui o valor do contador de ticks do sistema 
+no instante em que a thread deve voltar para a fila de prontos. Em outros contextos, 
+o valor do campo pode indicar outra ação.
+
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+
+timer_sleep() chama thread_sleep() passando de parametro o instante em que a thread deve voltar 
+para a fila de prontos. thread_sleep() desabilita interrupts, encadeia a thread_current() 
+na listaBloqueadosTimer, e chama o scheduler do SO. É necessário desabilitar interrupts pois 
+a listaBloqueadosTimer é iterada dentro de um timer interrupt, e existe o possível
+race. Em todo timer interrupt, a listaBloqueadosTimer é iterada e caso o 
+(thread->timerTicks >= timerAgora) a thread em questão volta para a fila de prontos.
+
+
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+
+
+é salvo o valor do contador em que a thread deve sair da listaBloqueadosTimer, ao invés de um 
+intervalo de tempo. Assim é necessário apenas uma comparação com o valor timerAgora, ao invés
+de operações mais custosas.
+
+
+---- SYNCHRONIZATION ----
+
+>> A4: How are race conditions avoided when multiple threads call
+>> timer_sleep() simultaneously?
+
+
+a operação perigosa é encadear o struct thread* na listaBloqueadosTimer, e essa operação 
+acontece com interrupts desabilitados.
+
+
+>> A5: How are race conditions avoided when a timer interrupt occurs
+>> during a call to timer_sleep()?
+
+
+a operação perigosa é encadear o struct thread* na listaBloqueadosTimer, e essa operação 
+acontece com interrupts desabilitados.
+
+
+---- RATIONALE ----
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+
+me pareceu um design lógico e claro.
+
+
+
+			 PRIORITY SCHEDULING
+			 ===================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+- No arquivo thread.h
+
+- Adicionado campos na struct thread
+
+struct lock *bloqueadoPor ;							    /* endereço do lock que a thread esta esperando */
+struct list prioridadesEmprestadas ; 				    /* lista de prioridades emprestadas através do sistema de doação */
+struct prioridadeEmprestada *prioridadeEmprestadaMax ;	/* maior prioridade na lista de prioridades emprestadas */
+
+- Declaração de nova struct
+
+/*
+ * struct relaciona uma doação de prioridade e o lock que causou a doação
+ */
+struct prioridadeEmprestada
+{
+	int prio ; 				/* valor de prioridade */
+	struct lock *lock ; 	/* lock que causou a doação */
+	struct list_elem elem ; /* encadeado em prioridadesEmprestadas */
+} ;
+
+
+>> B2: Explain the data structure used to track priority donation.
+>> Use ASCII art to diagram a nested donation.  (Alternately, submit a
+>> .png file.)
+
+
+A struct thread possui uma lista de prioridadeEmprestada. Uma thread t1 ao tentar adquirir um lock 
+que está indisponível, checa se a thread t2 dona do lock possui prioridade atual menor que a sua. 
+Caso isso seja verdade, antes de se bloquear, thread t1 adiciona uma doação de prioridade
+na lista de prioridadeEmprestada de t2. A lista prioridadeEmprestada está sempre ordenada, pois a 
+adição de uma doação só acontece caso ela seja maior que as doações já existentes ali, e a nova doação 
+é a cabeça da lista. Portanto a prioridadeEmprestadaMax de uma thread é a cabeça da lista caso ela 
+exista. Uma thread ao devolver um lock, itera sobre prioridadesEmprestadas e retira doações que foram
+causadas pelo lock sendo devolvido. Pode existir mais de uma doação no caso de doações 
+aninhadas, portanto é preciso iterar sobre toda a lista.
+Doações aninhadas acontecem dentro da funçao thread_checarEmprestarPrioridade. Uma thread t1 que 
+doou para t2, checa se t2 possui o campo bloqueadorPor != NULL,
+e caso isso seja verdade, é chamado thread_checarEmprestarPrioridade(t2, t2->bloqueadoPor->holder, 
+t2->bloqueadoPor), que repassa a doação recem recebida por t2 para a thread que possui o 
+lock que t2 está aguardando.
+
+
+---- ALGORITHMS ----
+
+>> B3: How do you ensure that the highest priority thread waiting for
+>> a lock, semaphore, or condition variable wakes up first?
+
+
+sempre ao retirar uma thread de uma lista de bloqueados, é usada a função list_min junto
+de uma função comparadora list_less_func (thread_compararPrioridade ou comparadorCondVariable), 
+que retornará a thread de maior prioridade na lista. O documento da disciplina diz para 
+não se preocupar em implementar filas de prioridades eficientes, 
+pois não é o foco dos projetos, e para implementar filas de prioridades com as funções do list.h
+
+
+>> B4: Describe the sequence of events when a call to lock_acquire()
+>> causes a priority donation.  How is nested donation handled?
+
+
+Uma thread t1 ao tentar adquirir um lock que está indisponível, checa se a thread t2 dona do lock 
+possui prioridade atual menor que a sua. Caso isso seja verdade, antes de se bloquear, thread t1 
+adiciona uma doação de prioridade de valor thread_getPrioridade(t1) na lista de prioridadeEmprestada de t2. 
+
+Doações aninhadas acontecem dentro da funçao thread_checarEmprestarPrioridade. Uma thread t1 que 
+doou para t2, checa se t2 possui o campo bloqueadorPor != NULL,
+e caso isso seja verdade, é chamado thread_checarEmprestarPrioridade(t2, t2->bloqueadoPor->holder, 
+t2->bloqueadoPor), que repassa a doação recem
+recebida por t2 para a thread que possui o lock que t2 está aguardando.
+
+
+>> B5: Describe the sequence of events when lock_release() is called
+>> on a lock that a higher-priority thread is waiting for.
+
+
+Uma thread ao devolver um lock, itera sobre prioridadesEmprestadas e retira doações que foram 
+causadas pelo lock sendo devolvido.
+
+
+---- SYNCHRONIZATION ----
+
+>> B6: Describe a potential race in thread_set_priority() and explain
+>> how your implementation avoids it.  Can you use a lock to avoid
+>> this race?
+
+
+Não entendi o potencial race que a questão se refere. Não enxergo um potencial race na minha 
+implementação.
+
+
+---- RATIONALE ----
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+
+me pareceu um design lógico e claro.
+
+
+			  ADVANCED SCHEDULER
+			  ==================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+- No arquivo thread.h
+
+- Adicionados campos na struct thread
+
+int nice ;										/* valor nice */
+int64_t recentCpu ;								/* valor recentCpu */
+bool recentCpuFlag ; 							/* flag que indica que o valor recentCpu mudou */
+
+- Adicionado variáveis
+
+/*
+ * Variaveis necessárias para o advanced scheduler
+ */
+static int readyThreads = 0 ;
+static int64_t loadAvg = 0 ;
+
+
+---- ALGORITHMS ----
+
+>> C2: Suppose threads A, B, and C have nice values 0, 1, and 2.  Each
+>> has a recent_cpu value of 0.  Fill in the table below showing the
+>> scheduling decision and the priority and recent_cpu values for each
+>> thread after each given number of timer ticks:
+
+
+Não preenchi a tabela pois achei irrelevante.
+
+
+timer  recent_cpu    priority   thread
+ticks   A   B   C   A   B   C   to run
+-----  --  --  --  --  --  --   ------
+ 0
+ 4
+ 8
+12
+16
+20
+24
+28
+32
+36
+
+>> C3: Did any ambiguities in the scheduler specification make values
+>> in the table uncertain?  If so, what rule did you use to resolve
+>> them?  Does this match the behavior of your scheduler?
+
+>> C4: How is the way you divided the cost of scheduling between code
+>> inside and outside interrupt context likely to affect performance?
+
+---- RATIONALE ----
+
+>> C5: Briefly critique your design, pointing out advantages and
+>> disadvantages in your design choices.  If you were to have extra
+>> time to work on this part of the project, how might you choose to
+>> refine or improve your design?
+
+
+Design me pareceu lógico e organizado. Algo para refinar essa parte do projeto
+seria implementar filas de prioridades eficientes. Em várias situações é necessário extrair
+a thread de maior prioridade de uma fila, e foram usadas as funções do list.h, que são buscas 
+lineares em uma linked list. Uma fila de prioridades construída com heap teria performance 
+muito melhor, mas seria mais difícil de programar.
+
+
+>> C6: The assignment explains arithmetic for fixed-point math in
+>> detail, but it leaves it open to you to implement it.  Why did you
+>> decide to implement it the way you did?  If you created an
+>> abstraction layer for fixed-point math, that is, an abstract data
+>> type and/or a set of functions or macros to manipulate fixed-point
+>> numbers, why did you do so?  If not, why not?
+
+
+Criei o arquivo fixed-point.h, e implementei as operações em forma de funções inline, seguindo 
+o guia na especificação. Fiz isso pois as operações são confusas, e ter as funções com nome 
+e parametros óbvios ajuda a evitar erros.
+
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
+

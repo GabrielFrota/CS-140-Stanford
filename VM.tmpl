@@ -1,0 +1,414 @@
+      	    +---------------------------+
+		    |		CS 140				|
+		    | PROJECT 3: VIRTUAL MEMORY	|
+		    |	   DESIGN DOCUMENT		|
+		    +---------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Gabriel Moreno Frota
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			PAGE TABLE MANAGEMENT
+			=====================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+- No arquivo threads.h adicionados campos na struct thread
+
+void *espUsuario ;					/* topo da pilha do usuário ao entrar no syscall handler */
+struct lock pageTableLock ;			/* lock que protege acessos a page table do processo */
+
+- No arquivo pte.h
+
+#define PTE_S 0x8 				/* 1 = levou swapout, 0 = sem swapout */
+#define PTE_M 0x10				/* 1 = pagina mapeada por mmap, 0 = pagina não mapeada por mmap */
+
+
+---- ALGORITHMS ----
+
+>> A2: In a few paragraphs, describe your code for locating the frame,
+>> if any, that contains the data of a given page.
+
+
+Essa informação está na page table entry do endereço virtual usuário.
+
+- Se o PTE_P está setado, a página está em memória e o endereço físico da página está nos bits PTE_ADDR
+- Se o PTE_P está em zero, e o PTE_S está setado, a página levou swap-out, e os bits PTE_ADDR 
+dizem o índice do slot da partição de swap que está aquela página. Um slot de swap é um 
+conjunto de 8 setores continuos do disco que guardam 1 paǵina.
+- Se o PTE_P está em zero, e o PTE_M está setado, a página é um bloco de um arquivo mapeado, e os bits 
+PTE_ADDR possuem o mapid_t do mapeamento, que identificam um struct arquivoMapeado,
+e através dessa struct é possível identificar o offset dentro do arquivo a qual a página não presente 
+corresponde, e ler a página do disco com file_read_at(). 
+- Se o PTE_P está em zero, e os outros 31 bits também estão em zero, pode ser que o acesso seja 
+inválido. É necessário calcular a distancia do endereço que causou o page fault com o endereço do 
+topo da pilha do usuário. O endereço do topo da pilha do usuário é salvo na entrada do interrupt handler.
+Se distanciaPilha <= 32, o acesso é válido, e é necessário crescer a pilha do processo, alocando uma 
+nova página e mapeando-a no endereço não presente. Se distanciaPilha > 32, o acesso é inválido, e o 
+processo será terminado.
+
+
+>> A3: How does your code coordinate accessed and dirty bits between
+>> kernel and user virtual addresses that alias a single frame, or
+>> alternatively how do you avoid the issue?
+
+ 
+Toda a lógica do sistema funciona sobre as ptes do endereço virtual do usuário, portanto os bits 
+sempre estão em estado consistente. Antes de toda operação read/write no disco referente 
+a uma página alocada a um processo diferente do em execução, é necessário converter o endereço 
+virtual de usuário para o endereço virtual do kernel, pois o processo em execução não terá esse
+mesmo endereço mapeado no mesmo frame. Essa conversão é possível pois as páginas 
+físicas estão mapeadas no mapeamento do kernel em ordem a partir do endereço 3GB, portanto a partir 
+de um endereço virtual de usuário, que fornece um endereço físico, é possivel inferir qual endereço 
+virtual do kernel refere-se a essa mesma página, que será o endereço 3GB + endereço físico.
+
+
+---- SYNCHRONIZATION ----
+
+>> A4: When two user processes both need a new frame at the same time,
+>> how are races avoided?
+
+
+O alocador já implementado em palloc.h se proteje desse race, portanto no caso de páginas livres 
+isso não causará problemas. Quanto a função frame_freeFrames(), que da swap-out em páginas velhas, 
+a variável global que representa o ponteiro do relógio está protegida com um lock, e o algoritmo
+após ler o index do frame a ser analisado, tenta pegar o lock do frame, e caso o lock esteja
+indisponível o frame é ignorado e segue para a próxima iteração. O frame sendo analisado para um 
+possível swap-out nunca será o mesmo entre processos diferentes.
+
+
+---- RATIONALE ----
+
+>> A5: Why did you choose the data structure(s) that you did for
+>> representing virtual-to-physical mappings?
+
+
+Tentei fazer algo parecido como as coisas são de verdade, usando os bits da pte.
+
+
+		       PAGING TO AND FROM DISK
+		       =======================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+- No arquivo thread.h adicionado na struct thread
+
+struct lock pageTableLock ;			/* lock que protege acessos a page table do processo */
+
+
+- Nos arquivos frame.h e frame.c
+
+/*
+ * Descritor de uma página fisica disponível a processos usuários.
+ * Existe 1 descritor para cada página do user_pool. Destaque que esse descritor
+ * não é relacionado à alocação de memória, funcionalidade que já existe em palloc.h.
+ * Esse descritor participa do swap e mmap, e páginas do kernel não podem levar swap
+ * e não podem ser alvo de um mmap.
+ */
+struct frame
+{
+	struct lock lock ;
+	struct thread *t ;
+	void *uAddr ;
+} ;
+
+/*
+ * array de descritores
+ */
+static struct frame *frames ;
+
+/*
+ * lock protegendo o ponteiro do relogio
+ */
+static struct lock lockContadorClockAlg ;
+
+/*
+ * variável que representa o ponteiro do relógio do clock algorithm
+ */
+static int contadorClockAlgorithm = 0 ;
+
+
+- No arquivo swap.c
+
+/*
+ * quantidades de setores do disco necessários para escrever uma página
+ */
+#define SETORES_POR_PAGINA (PGSIZE/BLOCK_SECTOR_SIZE)
+
+/*
+ * struct para acesso a partição de swap
+ */
+static struct block *swapArea ;
+
+/*
+ * bitmap para gerenciar os slots de swap livres/em uso
+ */
+static struct bitmap *swapMap ;
+
+/*
+ * lock que protege o bitmap swapMap
+ */
+static struct lock swapMapLock ;
+
+/*
+ * quantidade de slots para swap, valor depende do tamanho da partição de swap
+ */
+static size_t quantSlotsSwap ;
+
+
+---- ALGORITHMS ----
+
+>> B2: When a frame is required but none is free, some frame must be
+>> evicted.  Describe your code for choosing a frame to evict.
+
+
+O alocador em palloc ao falhar uma alocação do user_pool chamará frame_freeFrames(). O valor em 
+contadorClockAlgorithm diz qual o próximo frame a ser analisado para um possível swap-out, e 
+este valor é lido e incrementado a cada iteração do loop. O descritor do frame relaciona o 
+frame a um endereço virtual uAddr do processo t. Com isso é possível ler os bits da pte.
+
+- O lock do descritor indisponível indica que o frame está participando de uma operação 
+read/write, ou está sendo analisado por uma outra chamada freeFrames(). Caso indisponível, 
+ignora o frame e segue para proxima iteração.
+- Após pegar o lock do frame é preciso tratar um possível deadlock que está descrito com um
+comentário no código, achei que ficaria muito longo escrever aqui.
+- Caso o bit PTE_A esteja setado, a página foi acessada recentemente. Coloca 
+zero no bit, e segue para a próxima iteração.
+- Caso o bit PTE_A esteja em zero, esta é uma página velha o suficiente, e levará swap-out.
+- Caso o bit PTE_M esteja setado, esta é uma página mapeada por mmap(). Caso o bit PTE_D esteja 
+em zero, a página não foi escrita e está identica aos dados no arquivo, portanto não precisa 
+escrever no disco. Caso o bit PTE_D esteja setado, a página precisa ser escrita no disco. 
+Após isso, alterar PTE_P para zero, PTE_D para zero, e PTE_ADDR para o mapid_t que identifica 
+o mapeamento. Após isso chamar palloc_free_page() para adicionar o frame recem chutado no 
+bitmap de páginas livres, e esse frame agora está disponível para alocação.
+- Caso o bit PTE_M esteja em zero, esta não é uma página mapeada por mmap(), e será escrita na 
+partição de swap. Após escrita na partição de swap, alterar PTE_P para zero, PTE_S para 1, 
+PTE_D para zero, e PTE_ADDR para o indice do slot de swap retornado por swap_swapOut(). Após isso 
+chamar palloc_free_page() para adicionar o frame recem chutado no bitmap de páginas livres, 
+e esse frame agora está disponível para alocação.
+
+
+>> B3: When a process P obtains a frame that was previously used by a
+>> process Q, how do you adjust the page table (and any other data
+>> structures) to reflect the frame Q no longer has?
+
+
+A pte do processo Q será alterada no processo de swap-out do frame, como descrito na questão 
+acima. P ao chutar a página de Q pega a Q->pageTableLock antes de alterar qualquer coisa, 
+e ao colocar PTE_P em zero, Q levará page fault se tentar acessar o endereço. Q ao entrar no 
+page fault handler será bloqueado ao tentar adquirir Q->pageTableLock.
+
+
+>> B4: Explain your heuristic for deciding whether a page fault for an
+>> invalid virtual address should cause the stack to be extended into
+>> the page that faulted.
+
+
+Se a distância do fault_addr para o topo da pilha do usuário é menor ou igual a 32 bytes, a 
+pilha deve crescer. Uma distancia negativa indica que o %esp foi decrementado, mas o fault_addr 
+acima de %esp ainda não foi tocado. Uma distancia acima de 32 bytes significa acesso inválido, 
+e o processo sera terminado.
+
+
+---- SYNCHRONIZATION ----
+
+>> B5: Explain the basics of your VM synchronization design.  In
+>> particular, explain how it prevents deadlock.  (Refer to the
+>> textbook for an explanation of the necessary conditions for
+>> deadlock.)
+
+
+frame->lock e thread->pageTableLock são os 2 locks que resolvem os races. frame->lock sempre
+é adquirido antes de qualquer operação sobre um frame, e thread->pageTableLock sempre é adquirido
+antes de qualquer operação sobre a page table de um processo. Existem alguns possíveis deadlocks
+identificados que acontecem quando se bloqueia em frame->lock ou thread->pageTableLock, já segurando
+o thread_current()->pageTableLock. Os comentários nas funções frame_clearDescritor() e frame_freeFrames()
+descrevem o problema e resolução de maneira mais detalhada, pois acho que ali fica melhor de ler e
+entender o que está acontencendo, escrever tudo aqui ficaria confuso.
+
+
+>> B6: A page fault in process P can cause another process Q's frame
+>> to be evicted.  How do you ensure that Q cannot access or modify
+>> the page during the eviction process?  How do you avoid a race
+>> between P evicting Q's frame and Q faulting the page back in?
+
+
+Antes de qualquer leitura/escrita na pte, é necessário adquirir a pageTableLock do processo. O 
+page fault em P pegará o P->pageTableLock. O evict pegará o frame->lock e Q->pageTableLock. 
+A primeira mudança na pte de Q é setar PTE_P em zero. Isso causará um page fault em Q caso ele 
+acesse a página sendo chutada, mas ao entrar no page fault handler Q será bloqueado ao tentar 
+adquirir Q->pageTabeLock. Após o processo de evict concluído, P liberará a 
+Q->pageTableLock e frame->lock, Q será desbloqueado, e a pte de Q possui estado correto e 
+seus bits indicam a localização da página recém chutada, que levará swap-in.
+
+
+>> B7: Suppose a page fault in process P causes a page to be read from
+>> the file system or swap.  How do you ensure that a second process Q
+>> cannot interfere by e.g. attempting to evict the frame while it is
+>> still being read in?
+
+
+O que torna um frame a ser analisado como um possível candidato a evict é o fato
+de existir o mapeamento no descritor relacionando aquele frame ao processo t no 
+endereço uAddr. Um descritor com t == NULL e uAddr == NULL significa um frame não
+alocado no momento, e o algoritmo de evict o ignora. O frame que receberá a página
+de P, é um frame recém retornado por palloc_get_page(), que obrigatóriamente é um frame
+com o descritor em t == NULL e uAddr == NULL, que será ignorado pelo algoritmo de evict.
+A ultima linha do page fault handler, após todo o processo de page-in já concluído, é a 
+chamada frame_setDescritor(kpage, thread_current(), pg_round_down(fault_addr)), que altera
+os campos do descritor para t = thread_current() e uAddr = pg_round_down(fault_addr), 
+fazendo com que esse frame a partir de agora não seja ignorado pelo algoritmo de evict.
+Portanto é impossível o processo Q tentar evict na mesma página que o processo P está 
+lendo para a memória, pois o mapeamento no descritor ainda não existe.
+
+
+>> B8: Explain how you handle access to paged-out pages that occur
+>> during system calls.  Do you use page faults to bring in pages (as
+>> in user programs), or do you have a mechanism for "locking" frames
+>> into physical memory, or do you use some other design?  How do you
+>> gracefully handle attempted accesses to invalid virtual addresses?
+
+
+As funções validarRead/validarWrite fazem um acesso de leitura/escrita em um endereço, com a 
+intenção de causar um page fault em um momento seguro. Antes de uma operação de 
+leitura/escrita, as funções são usadas para carregar as páginas caso necessário, ou terminar o 
+processo em um momento seguro no caso de endereço inválido. Logo em seguida, na proxima linha, é chamado 
+frame_pinUaddr(), que chama lock_acquire(frame->lock) no descritor do frame mapeado no endereço o uAddr 
+passado a função. A operação read/write não começa enquanto o frame não está lockado, e após lockado o 
+frame é ignorado pelo algoritmo de swap.
+
+
+---- RATIONALE ----
+
+>> B9: A single lock for the whole VM system would make
+>> synchronization easy, but limit parallelism.  On the other hand,
+>> using many locks complicates synchronization and raises the
+>> possibility for deadlock but allows for high parallelism.  Explain
+>> where your design falls along this continuum and why you chose to
+>> design it this way.
+
+
+Me preocupei em ter o máximo de paralelismo possível, ter a melhor performance e executar
+código segurando locks o minimo possível. Existe um lock na page table do processo, 
+e um lock no descritor de frame. Nas operações read/write é travado página a página conforme
+as requisições são sendo feitas ao disco. Não enxergo um design mais refinado que esse, 
+travei o que era indispensável pelo menor tempo possível.
+
+
+			 MEMORY MAPPED FILES
+			 ===================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+- No arquivo thread.h adicionados na struct thread
+
+struct list mapeamentos ;			/* lista de struct arquivoMapeado */
+int mapeamentosQuant ;			/* quantidade de arquivos mapeados no processo */
+
+/*
+ * Representa um mapeamento de arquivo por uma chamada mmap(),
+ * ou um segmento do executável do processo.
+ * Uma thread possui uma lista de struct mapeamentoArquivo.
+ */
+struct mapeamentoArquivo
+{
+	mapid_t mid ;			/* identificador do mapeamento */
+	struct file *f ;		/* file* do arquivo aberto */
+	off_t off ;				/* offset dentro do arquivo aonde começa o mapeamento */
+	void *startAddr ;		/* endereço virtual base do mapeamento */
+	void *endAddr ;			/* endereço virtual limite do mapeamento */
+	struct list_elem elem ; /* encadeado em arquivosMapeados */
+} ;
+
+- No arquivo pte.h
+
+#define PTE_M 0x10				/* 1 = pagina mapeada por mmap, 0 = pagina não mapeada por mmap */
+
+
+---- ALGORITHMS ----
+
+>> C2: Describe how memory mapped files integrate into your virtual
+>> memory subsystem.  Explain how the page fault and eviction
+>> processes differ between swap pages and other pages.
+
+
+Páginas mapeadas a um arquivo possuem o bit PTE_M setado. Uma página ao levar swapOut, caso possua 
+o PTE_M setado, será escrita no disco caso o PTE_D esteja setado, através da função file_write_at(). 
+Para encontrar o offset do arquivo que esta página refere-se, é só calcular o offset do endereço da
+página em relação ao mapeamento->startAddr. Para trazer do disco uma página não presente, 
+é usada a mesma idéia. O offset do fault_addr em relação ao mapeamento->startAddr é o offset dentro 
+do arquivo, e é usada a função file_read_at() para ler a página do disco. 
+
+Também existe o mapeamento do executável do processo, que na maioria das vezes vai ser tratado
+do mesmo jeito que foi descrito acima, mas tem uns casos especiais. Tem um comentário grande em
+load_segment() em process.c, ali fica melhor pra ler eu axo, pois tem o código da função logo
+abaixo.
+
+
+>> C3: Explain how you determine whether a new file mapping overlaps
+>> any existing segment.
+
+
+Dentro da chamada mmap(), todo o intervalo do endereço addr a addr+filesize é validado, antes de 
+seguir em frente com modificações na page table.
+
+
+---- RATIONALE ----
+
+>> C4: Mappings created with "mmap" have similar semantics to those of
+>> data demand-paged from executables, except that "mmap" mappings are
+>> written back to their original files, not to swap.  This implies
+>> that much of their implementation can be shared.  Explain why your
+>> implementation either does or does not share much of the code for
+>> the two situations.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
+

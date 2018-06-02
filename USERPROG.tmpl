@@ -1,0 +1,329 @@
+		     +--------------------------+
+      	     |		CS 140		|
+		     | PROJECT 2: USER PROGRAMS	|
+		     | 	   DESIGN DOCUMENT     	|
+		     +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Gabriel Moreno Frota
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			   ARGUMENT PASSING
+			   ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+Nenhuma modificação desse tipo foi necessária para a solução do problema.
+
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+
+A funçao setup_stack() recebe o endereço da string que é a copia do comando digitado, e o 
+endereço do campo esp no interrupt frame. Primeiramente inicia a variável local topoPilha para o 
+valor PHYS_BASE, que é o topo do mapeamento virtual do usuário. Após isso copia todas as strings 
+resultantes de um strtok_r(" ") na pilha. Após isso ajusta o endereço para um múltiplo de 4 para 
+melhor performance. Após isso escreve os endereços das strings na ordem esperada, com o null 
+pointer no fim do array. Isso é feito com um loop decrescente sobre variáveis locais que seguram 
+os endereços das strings. Após isso escreve o endereço da base do array. Após isso escreve o 
+valor argc. Após isso escreve o endereço de retorno. Após isso escreve o endereço do topo da 
+pilha no campo esp do interrupt frame, valor esse que será carregado no registrador esp ao 
+retornar de um interrupt. Conforme dito na especificação, a pilha aqui deve ser limitada a 1 
+página, portanto em caso da pilha crescer mais que uma página, será feito um acesso em um 
+endereço não mapeado, que causará um page fault e terminará o processo. Um page fault nesse 
+projeto sempre indica erro e termina o processo. Existe uma limitação de 32 parametros que não 
+tem a ver com overflow da página, pois o array temporário que mantém os valores *argv foi declarado 
+com tamanho 32, mas esse valor pode ser mudado com uma recompilação.
+
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+
+
+Porque strtok_r() resolve o mesmo problema que strtok(), mas pode ser chamada por diferentes 
+threads paralelamente, pois usa variáveis locais das threads na sua implementação. Não tem 
+sentido implementar strtok() também, pois ela resolve o mesmo problema de uma forma menos útil.
+
+
+>> A4: In Pintos, the kernel separates commands into a executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+
+
+Não entendi o que essa pergunta quer de resposta.
+ 
+
+
+			     SYSTEM CALLS
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+- No arquivo thread.h 
+
+- Na struct thread
+
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+    uint32_t *pagedir;                 		/* Page directory. */
+
+    struct list statusFilhos ;			/* lista de struct statusFilho */
+    struct statusFilho *meuStatus ;		/* endereço do struct statusFilho referente a mim na lista do meu pai */
+    struct list arquivosAbertos ;		/* lista de struct arquivoAberto */
+    int arquivosAbertosQuant ;			/* quantidade de arquivos abertos */
+    struct file *executavel ;			/* file* do executável do processo, para bloquear writes enquanto o processo está executando */
+#endif
+
+- Declaração de nova struct e constantes
+
+/*
+ * bits da variável flags da struct statusFilho
+ */
+#define STATUS_FLAG_LOAD_SUCESSO 0x1	/* 1 = load completo com sucesso , 0 = load falhou */
+#define STATUS_FLAG_EXIT_CHAMADO 0x2	/* 1 = exit já foi chamado , 0 = exit ainda não foi chamado */
+#define STATUS_FLAG_PAI_FINALIZADO 0x4	/* 1 = pai já foi finalizado , 0 = pai ainda não foi finalizado */
+
+/*
+ * estado de load e de finalização de uma thread filha. Uma thread pai possui uma lista de statusFilho,
+ * e uma thread filho possui uma variável *meuStatus que é o endereço da struct statusFilho referente a ela
+ * na lista de seu pai.
+ */
+struct statusFilho
+{
+	struct lock lock ;
+	tid_t tid ;
+	int status ;
+	int flags ;
+	struct semaphore semaphore ;
+	struct list_elem elem ;
+} ;
+
+
+/*
+ * Representa um arquivo aberto por uma chamada open(). Uma thread possui uma lista de struct arquivoAberto.
+ */
+struct arquivoAberto
+{
+	int fdNum ;
+	struct file *f ;
+	struct list_elem elem ;
+} ;
+
+
+Em process.c
+
+/*
+ * lock para garantir que apenas um processo execute código do file system, como
+ * dito na especificação
+ */
+static struct lock fileSysLock ;
+
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+
+
+Um file descriptor refere-se a algum arquivo em particular, mantém um offset para operações de 
+leitura/escrita, alguma informação que identifica esse arquivo no sistema de arquivos do kernel, 
+e possui um valor int fdNum que identifica esse file descriptor no contexto do 
+processo. Múltiplos descritores referentes ao mesmo arquivo podem existir dentro do mesmo processo 
+ou do SO, mas o inteiro fdNum é único no contexto do processo.
+
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+
+
+Todo ponteiro que vem do usuário é obrigatóriamente checado pela funçao validarPtrUsuario(), 
+antes do kernel fazer qualquer coisa com esse endereço. A função validarPtrUsuario() checa se o 
+ponteiro é diferente de NULL, se está abaixo de PHYS_BASE, e se o endereço está mapeado 
+corretamente na page table do processo fazendo uma operação de leitura no endereço. Em caso de 
+um endereço inválido, o processo será terminado com status -1. Um endereço inválido não 
+checado irá sempre eventualmente causar um page fault que terminará o processo, mas é uma boa 
+idéia checar os parametros da syscall antes de fazer qualquer coisa, para evitar um futuro page 
+fault em uma parte delicada do código, onde será difícil devolver recursos como locks ou 
+memória. As syscalls read/write são tratadas um pouco diferente, na camada da syscall é verificado 
+apenas se o endereço máximo do intervalo é um endereço de usuário, pois um endereço do kernel acessado de 
+dentro do kernel não causará page fault, e as funçoes process_read e process_write fazem a 
+validação de todo o intervalo que será acessado. Parece estranho porque foge do padrão de 
+checar endereços na camada syscall, mas a idéia é que a implementação das funcionalidades 
+relacionadas a processos estão no módulo process.h, funcionalidades essas que podem ser chamadas de outras 
+partes do kernel, e o módulo syscall.h é apenas um ponto de entrada dessas funções fornecido a um código 
+usuário. Portanto a validação de todo o intervalo dentro de process_read e process_write.
+
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+
+
+As funçoes read/write validam todas as páginas que serão tocadas no intervalo buffer a 
+buffer+size, 1 checagem por página. No caso de 4096 bytes, se o endereço buffer for o offset 0 
+dentro de uma página haverá apenas 1 checagem, caso contrário haverão 2. No caso de 2 bytes, se 
+o endereço buffer for o offset 4096 dentro de uma página haverão 2 checagens, caso contrário 
+haverá 1. Não acho que exista o que melhorar nesse caso.
+
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+
+
+A thread pai chama sema_down() no semaphore da struct statusFilho referente ao pid que foi passado 
+de parametro. A thread filha chama sema_up() nesse mesmo semaphore através da variável *meuStatus 
+ao terminar/ser terminada. Esse processo exige uma lógica para decidir quem chama free na struct 
+statusFilho, pois caso contrário é possivel que um sema_up()/sema_down() ou um lock_acquire() 
+cause um acesso a memória já devolvida. Uma thread pai da free na struct após retornar do 
+sema_down() dentro do wait(), pois a thread filha já terminou e o status de término acabou de ser 
+lido. Uma thread filha ao chamar thread_exit() checa se seu pai já terminou, e caso tenha, da free 
+na struct, pois não existe mais a possibilidade de um wait do pai. Uma thread pai percorre sua lista 
+de statusFilho e caso o filho em questão já tenha terminado, da free na struct. Caso o filho não 
+tenha terminado, a thread pai seta a flag na struct para informar ao seu filho que já terminou, 
+e não da free na struct, pois seu filho ao chamar thread_exit() irá acessar a struct.
+
+
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+
+As funçoes process_read/process_write validam com uma operação de leitura/escrita, todas as páginas 
+contidas no intervalo buffer a buffer+size, antes de seguir em frente para dentro do código do filesystem.
+Um endereço inválido causará um page fault que terminará o processo na 
+fase de validação, sem causar problemas maiores. A situação que não causaria um page fault é 
+uma syscall read/write vinda do usuario com um endereço do kernel no intervalo buffer+size, e esse caso é 
+tratado na entrada da syscall, aonde é testado se o endereço máximo do intervalo esta abaixo de PHYS_BASE,
+que é aonde começa o mapeamento do kernel.
+
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+
+
+A thread pai assim que retorna de thread_create(), da um sema_down() no semaphore da struct 
+statusFilho referente ao tid da nova thread, retornado por thread_create(). A thread filha após 
+retornar de load(), seta a flag STATUS_FLAG_LOAD_SUCESSO (caso o load tenha dado certo), e da um 
+sema_up() nesse mesmo semaphore. A thread pai então vai ser desbloqueada, e tem no bit 
+STATUS_FLAG_LOAD_SUCESSO o resultado do load.
+
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+
+
+P calls wait(C) before C exits - P vai chamar sema_down() dentro de wait(), e irá ser bloqueada 
+até que C termine. Após C terminar P vai ser desbloqueada e dará free na struct após ler o 
+valor status.
+
+P calls wait(C) after C exits - P vai chamar sema_down() dentro de wait(), semaphore este que terá 
+valor 1 portanto P não será bloqueada. P vai dar free na struct após ler o valor status.
+
+P terminates without waiting, before C exits - P na função thread_exit(), irá setar a flag 
+STATUS_FLAG_PAI_FINALIZADO na struct. Eventualmente quando C terminar, irá testar a flag 
+STATUS_FLAG_PAI_FINALIZADO e dará free na struct.
+
+P terminates without waiting, after C exits - P na função thread_exit(), irá testar a flag 
+STATUS_FLAG_EXIT_CHAMADO e irá dar free na struct.
+
+Não acho que existam casos especiais aonde o sistema implementado dará problemas.
+
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+
+
+Foi uma solução que enxerguei que resolve todos os problemas de uma maneira boa.
+
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+
+
+No meu design de file descriptor no nivel do processo, me preocupei em não ficar expondo a struct 
+file*, que é interna ao filesys, e expor apenas inteiros fdNum que identificam um struct 
+arquivoAberto.
+
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+
+
+Não mudei o mapeamento.
+
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
+
