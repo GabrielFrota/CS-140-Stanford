@@ -16,7 +16,7 @@ principais arquivos são threads/thread.c e threads/synch.c
 - 2: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_3.html <br />
 principais arquivos são userprog/syscall.c e userprog/process.c
 - 3: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_4.html <br />
-principais arquivos são userprog/exception.c e vm/frame.c
+principais arquivos são userprog/exception.c, userprog/process.c e vm/frame.c
 - 4: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_5.html <br />
 principais arquivos são filesys/cache.c e filesys/inode.c <br /> <br />
 
