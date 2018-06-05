@@ -12,9 +12,13 @@ cs140.stanford.edu <br />
 https://tssurya.wordpress.com/2014/08/16/installing-pintos-on-your-machine/ <br /> <br />
 
 - 1: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_2.html <br />
+principais arquivos são threads/thread.c e threads/synch.c
 - 2: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_3.html <br />
+principais arquivos são userprog/syscall.c e userprog/process.c
 - 3: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_4.html <br />
-- 4: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_5.html <br /> <br /> 
+principais arquivos são userprog/exception.c e vm/frame.c
+- 4: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_5.html <br /> <br />
+principais arquivos são filesys/cache.c e filesys/inode.c
 
 Descrição da disciplina retirada da página <br /> <br />
 This class introduces the basic facilities provided in modern operating systems. The course divides into three major sections. The first part of the course discusses concurrency: how to manage multiple tasks that execute at the same time and share resources. Topics in this section include processes and threads, context switching, synchronization, scheduling, and deadlock. The second part of the course addresses the problem of memory management; it will cover topics such as linking, dynamic memory allocation, dynamic address translation, virtual memory, and demand paging. The third major part of the course concerns file systems, including topics such as storage devices, disk management and scheduling, directories, protection, and crash recovery. After these three major topics, the class will conclude with a few smaller topics such as virtual machines. <br />
