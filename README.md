@@ -3,7 +3,8 @@ Implementação dos projetos de programação da disciplina de Sistemas Operacio
 Os arquivos .tmpl na raiz do repositório são os documentos dos respectivos projetos. A raiz
 do repositório é a pasta /home/gabriel/pintos/src aqui no meu computador, e é também
 a raiz de um projeto do Eclipse IDE C/C++. Os scripts de inicialização do pintos estão configurados
-com esse caminho, e será necessário mudar caso o caminho para a pasta src for diferente. Usado
+com esse caminho, e será necessário mudar caso o caminho para a pasta src for diferente. Arquivos
+utils/pintos (linha 259) e utils/Pintos.pm (linha 362) contém os caminhos. Usado
 Ubuntu 18.04 e qemu, projeto funcionando 100% passando em todos os testes. Escrevi o código
 em portugues para ficar fácil de ver o que eu fiz vs o que já fazia parte do sistema. Projetos
 3 e 4 foram muíto difíceis. <br /><br />
