@@ -9,7 +9,7 @@ Ubuntu 18.04 e qemu, projeto funcionando 100% passando em todos os testes. Escre
 em portugues para ficar fácil de ver o que eu fiz vs o que já fazia parte do sistema. Projetos
 3 e 4 foram muíto difíceis. <br /><br />
 
-cs140.stanford.edu <br />
+https://cs140.stanford.edu <br />
 https://tssurya.wordpress.com/2014/08/16/installing-pintos-on-your-machine/ <br /> <br />
 
 - 1: http://www.scs.stanford.edu/17wi-cs140/pintos/pintos_2.html <br />
